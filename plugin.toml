@@ -1,0 +1,15 @@
+# maki package manifest. See https://maki.sh/docs/packages/
+# A package keeps only what this file names.
+
+min_maki_version = "0.7.1"
+
+[permissions]
+# maki.net.request(): the search call to your SearXNG instance.
+net = true
+# maki.uv.os_getenv("SEARXNG_URL"): where the instance lives.
+env = true
+
+# No net_hosts list. The instance is whatever SEARXNG_URL says, so a list
+# written here would break the next person's host. Narrow it in your own copy
+# if you want a fixed endpoint:
+# net_hosts = ["search.acme.dev"]

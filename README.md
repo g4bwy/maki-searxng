@@ -1,13 +1,50 @@
-# Websearch Plugin
+# searxng
 
-Replaces maki's builtin `websearch` tool (Exa AI, hosted, needs an API key) with a
-self-hosted [SearXNG](https://docs.searxng.org/) instance. Same tool name, so nothing
-else in your config or prompts has to change.
+![A search the agent ran through the tool, with the result list in the transcript](screenshot.png)
 
-## Requirements
+A `websearch` tool backed by your own [SearXNG](https://docs.searxng.org/)
+instance. Maki ships a `websearch` tool of its own that talks to a hosted service
+and needs an API key. This one talks to a server you run, under the same tool
+name, so nothing else in your configuration or your prompts has to change. The
+package is named `maki-searxng` and the tool it registers is named `websearch`.
 
-A SearXNG instance that will answer `format=json`. That has to be switched on in the
-instance's `settings.yml` — asking for a format that is not listed returns `403`:
+## Install
+
+Put this line in your global `~/.config/maki/init.lua`:
+
+```lua
+maki.pack.add({ "https://github.com/g4bwy/maki-searxng" })
+```
+
+Start maki in a terminal. It asks whether to install the package, then asks about
+the permissions in [`plugin.toml`](plugin.toml).
+
+## Turn the builtin off
+
+Maki loads its own plugins before any package, and the second claimer of a tool
+name is the one that fails. So with the builtin `websearch` plugin still on, this
+package registers nothing and you keep the hosted search. Disable it in
+`maki.setup`:
+
+```lua
+maki.setup({
+  plugins = { websearch = { enabled = false } },
+})
+```
+
+Then make sure the override took effect. This prints `override active`:
+
+```sh
+maki prompt --tools | grep -q SearXNG && echo "override active"
+```
+
+No output means the builtin still owns the name.
+
+## Requirement
+
+You need a SearXNG instance that answers `format=json`. That is off by default,
+and a request for a format the instance does not list returns `403`. Turn it on in
+the instance `settings.yml`:
 
 ```yaml
 search:
@@ -16,143 +53,150 @@ search:
     - json
 ```
 
-Check it from the shell before debugging the plugin:
+Test it from the shell before you look at the plugin:
 
 ```sh
 curl 'http://localhost:8888/search?q=maki&format=json' | head -c 200
 ```
 
-## Installation
-
-1. Copy the module into maki's config dir:
-
-   ```sh
-   mkdir -p ~/.config/maki/lua
-   cp init.lua ~/.config/maki/lua/websearch.lua
-   ```
-
-2. Grant `net` in `~/.config/maki/plugin.toml`, creating the file if needed:
-
-   ```toml
-   [permissions]
-   net = true
-   ```
-
-   This manifest gates **every** Lua file in `~/.config/maki`, including other modules
-   under `lua/`. A missing manifest denies everything; there is no per-module grant.
-
-3. In `~/.config/maki/init.lua`, turn the builtin off, allowlist the instance, and load
-   the module:
-
-   ```lua
-   maki.setup({
-       net = {
-           allowed_private_hosts = { "localhost:8888" },
-       },
-       plugins = {
-           websearch = { enabled = false },
-       },
-   })
-
-   require("websearch")
-   ```
-
-   Both lines matter. `plugins.websearch = { enabled = false }` is what hands the
-   `websearch` tool name to this plugin — with the builtin still enabled the load fails
-   with `plugin ... attempted to shadow existing tool 'websearch'`. The allowlist is what
-   lets `maki.net` reach a box on your own network at all; see
-   [Network](#why-the-allowlist-is-needed).
-
-4. Restart maki, or reload the config.
-
-Verify the override took effect:
-
-```sh
-maki prompt --tools | grep -q SearXNG && echo "override active"   # no output = builtin still owns it
-```
-
 ## Configuration
 
-| Setting | Default | How |
-|---------|---------|-----|
-| Instance URL | `http://localhost:8888` | `SEARXNG_URL` environment variable |
-| Request timeout | 10s `fast` / 30s `deep` | `PROFILES` in `init.lua` |
-| Result count | 8 per call | `num_results` tool argument |
-| Language | instance default | `language` tool argument |
+| Setting | Default | Where you set it |
+|---------|---------|------------------|
+| Instance URL | `http://localhost:8888` | the `SEARXNG_URL` environment variable |
+| Request timeout | 10s on `fast`, 30s on `deep` | `PROFILES` in `plugin/init.lua` |
+| Result count | 8 per call | the `num_results` tool argument |
+| Language | the instance default | the `language` tool argument |
 
-`SEARXNG_URL` is read from the environment maki starts in, per search:
+The plugin reads `SEARXNG_URL` from the environment maki starts in, once per
+search:
 
 ```sh
 SEARXNG_URL=http://searx.lan:8888 maki
 ```
 
-Anything other than `localhost:8888` needs a matching entry in
-`net.allowed_private_hosts`, and a public HTTPS instance needs neither the allowlist nor
-the plain-`http` exception.
+## Allowlist a LAN host
+
+Maki upgrades `http://` to `https://` and refuses private, loopback, and
+link-local addresses, because a page the model reads could otherwise point it at
+your internal network. A host in `net.allowed_private_hosts` is exempt from both
+rules, since a service on your LAN usually has no certificate. Every redirect hop
+is checked again against the same list.
+
+```lua
+maki.setup({
+  net = { allowed_private_hosts = { "localhost:8888" } },
+})
+```
+
+A public HTTPS instance needs neither the allowlist nor the plain `http`
+exception.
 
 ## Usage
 
 | Argument | Type | Notes |
 |----------|------|-------|
 | `query` | string | Required. |
-| `num_results` | integer | Defaults to 8. SearXNG returns far more; the plugin trims. |
-| `language` | string | SearXNG language code, e.g. `en`, `de`, `zh-CN`. Omit for the instance default. |
-| `profile` | string | `fast` (default) or `deep`. See [Profiles](#profiles). |
+| `num_results` | integer | Defaults to 8. SearXNG returns far more, and the plugin trims. |
+| `language` | string | A SearXNG language code, for example `en`, `de`, `zh-CN`. Omit it for the instance default. |
+| `profile` | string | `fast`, which is the default, or `deep`. See [Profiles](#profiles). |
 
-`categories` is always sent explicitly and `pageno` is pinned to 1, so there is no paging and
-no image categories. Output is truncated by `agent.max_output_lines` /
-`agent.max_output_bytes` like any other tool.
+The plugin always sends `categories` explicitly and pins `pageno` to 1, so there
+is no paging and no image category. Output is truncated by
+`agent.max_output_lines` and `agent.max_output_bytes`, like any other tool.
+
+## Permissions
+
+| Key | Used by |
+|-----|---------|
+| `net` | `maki.net.request()` for the search. The tool also declares `permission = "net"` with `permission_scopes = "query"`, mirroring the builtin, so each prompt names the query. `permission_scopes` without `permission` is a registration error, so the pair is not optional. |
+| `env` | `maki.uv.os_getenv()` for `SEARXNG_URL`. |
+
+The manifest names no `net_hosts` list, because the instance is whatever your
+`SEARXNG_URL` says. To pin it, add the list to your copy:
+
+```toml
+[permissions]
+net = true
+env = true
+net_hosts = ["searx.acme.dev"]
+```
+
+No `run` permission is needed: requests go through `maki.net`, not through
+`curl`.
+
+## Layout
+
+```text
+plugin.toml       permissions the package asks for
+plugin/init.lua   the tool: URL, request, formatting, truncation
+screenshot.png    the cover image
+README.md
+```
 
 ## Profiles
 
-`profile` chooses the engine set, and with it the request timeout.
+`profile` picks the engine set, and with it the timeout.
 
-| Profile | Sent as | Timeout | What runs |
-|---------|---------|---------|-----------|
+| Profile | Sent as | Timeout | Engines |
+|---------|---------|---------|---------|
 | `fast` (default) | `categories=general` | 10s | bing, duckduckgo, google cse, mojeek, seznam, wikipedia, wikidata, yahoo, yandex. About a second when warm. |
-| `deep` | `categories=deep` | 30s | arxiv, brave, fynd, google news, qwant, reuters, semantic scholar, startpage, startpage news, wiby. News, academic, browser-backed. |
+| `deep` | `categories=deep` | 30s | arxiv, brave, fynd, google news, qwant, reuters, semantic scholar, startpage, startpage news, wiby. News, academic, and browser-backed. |
 
-Use `deep` when a `fast` search came back thin, or when the query needs news, academic
-literature, or obscure coverage. Otherwise stay on `fast`: `deep` costs 3–25s, and its engines
-are the ones most likely to fail.
+Use `deep` when a `fast` search came back thin, or when the query needs news,
+academic literature, or obscure coverage. Otherwise stay on `fast`, because `deep`
+costs 3 to 25 seconds and its engines are the ones most likely to fail.
 
-* **The browser solver is an instance-side opt-in.** Several `deep` engines (startpage,
-  startpage news, qwant) sit behind scraping protection and only answer when the instance has a
-  browser-solving plugin configured. Without it they simply show up as failed.
-* **Failed engines self-suspend.** SearXNG parks an engine for 30–120s after it errors, so
-  consecutive `deep` searches report a shifting `[unresponsive engines]` note. Repeated notes
-  are expected on `deep`, not a plugin fault.
+Two things about `deep` are instance-side and cannot be fixed from the plugin:
 
-**`language` biases ranking, it does not translate.** Searching `latest news today` with
-`language=zh-CN` returns CNN; searching `上海 天气 预警` returns Shanghai government and
-Chinese weather sites. If you want results in a language, query in that language and treat
-`language` as a nudge.
+- Several `deep` engines (startpage, startpage news, qwant) sit behind scraping
+  protection and answer only when the instance has a browser-solving plugin
+  configured. Without one they show up as failed.
+- SearXNG parks an engine for 30 to 120 seconds after it errors, so back-to-back
+  `deep` searches report a shifting note. A changing note is expected, not a fault.
 
-## Notes
+`language` biases ranking, and it does not translate. A search for
+`latest news today` with `language=zh-CN` returns CNN. A search for Chinese
+weather terms returns Chinese government and weather sites. To get results in a
+language, query in that language and treat `language` as a nudge.
 
-* **Why the allowlist is needed.** `maki.net` upgrades `http://` to `https://` and blocks
-  private, loopback and metadata addresses to stop the model from redirecting it. Listing a
-  host in `net.allowed_private_hosts` exempts it from both, since a service on your LAN
-  usually has no certificate. Every redirect hop is checked again against that list.
-* **Permissions.** The tool declares `permission = "net"` with `permission_scopes =
-  "query"`, mirroring the builtin, so it goes through the normal network permission prompt
-  and each prompt names the query. `permission_scopes` without `permission` is a hard
-  registration error, so the pair is not optional.
-* **No shell.** Requests go through `maki.net`, so the plugin needs neither `curl` nor the
-  `run` permission.
-* **Degraded results are reported.** When engines fail, SearXNG fills in
-  `unresponsive_engines` and the plugin appends it to the output:
+## Reported failures
 
-  ```
-  [unresponsive engines] qwant: timeout, startpage: Suspended: CAPTCHA
-  ```
+When engines fail, SearXNG fills in `unresponsive_engines`, and the plugin appends
+it to the output:
 
-  Fewer engines means a narrower, less relevant result pool, which is usually the real
-  explanation when results look unrelated to the query. `Suspended: CAPTCHA` means that
-  engine is blocked and needs an engine config or proxy change on the instance — the plugin
-  cannot fix it. The note is suppressed when every engine answers, so it costs nothing when
-  the instance is healthy.
-* **Failures** — transport errors, non-2xx (with a 200-byte body preview), and unparseable
-  JSON each come back as a tool error rather than an empty result. A SearXNG instance that
-  stalls on upstream engines will surface as a timeout once the profile's budget (10s `fast`,
-  30s `deep`) is spent.
+```text
+[unresponsive engines] qwant: timeout, startpage: Suspended: CAPTCHA
+```
+
+Fewer engines means a narrower result pool, which usually explains results that
+look unrelated to the query. `Suspended: CAPTCHA` means that engine needs an
+instance change. The note is absent when every engine answers, so a healthy
+instance costs nothing.
+
+A transport error, a non-2xx status with a 200-byte body preview, and unparseable
+JSON each come back as a tool error rather than an empty result list. An instance
+that stalls on upstream engines surfaces as a timeout once the profile budget
+runs out.
+
+## Update, disable, remove
+
+```text
+/packupdate maki-searxng
+/packupdate! maki-searxng
+```
+
+Set `plugins["maki-searxng"] = { enabled = false }` to keep this package installed
+but inactive. That key is the package, and is not the same thing as
+`plugins.websearch`, which is maki's own builtin: you want the builtin off and this
+package on. To remove the package, delete its `maki.pack.add` line, reload, then run
+`/packdel maki-searxng`.
+
+## Development install
+
+```sh
+mkdir -p ~/.local/share/maki/site/pack/dev/start
+ln -sfn "$PWD" ~/.local/share/maki/site/pack/dev/start/maki-searxng
+```
+
+Run `/reload` after each edit.
