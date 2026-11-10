@@ -200,3 +200,7 @@ ln -sfn "$PWD" ~/.local/share/maki/site/pack/dev/start/maki-searxng
 ```
 
 Run `/reload` after each edit.
+
+## License
+
+MIT. See [LICENSE](LICENSE).
